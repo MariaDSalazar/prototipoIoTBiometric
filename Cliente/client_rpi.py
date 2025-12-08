@@ -347,7 +347,7 @@ except Exception as e:
     print(f"Error cargando Haar cascades: {e}")
 
 # ----- CONFIGURACIÓN -----
-MQTT_BROKER_IP = "192.168.1.7"
+MQTT_BROKER_IP = "colocar su ip"
 MQTT_PORT = 1883
 RPI_CLIENT_ID = "rpi_device_01"
 SERIAL_PORT = "/dev/ttyAMA0"
