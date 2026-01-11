@@ -1,0 +1,47 @@
+# Entornos virtuales
+venv/
+venv_*/
+.venv/
+.env/
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+
+# OS / IDE
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+
+# Logs
+*.log
+
+# Datos/artefactos locales del servidor biométrico
+paquete_biometrico/servidor/database.db*
+paquete_biometrico/servidor/dataset/
+paquete_biometrico/servidor/encodings.pickle
+paquete_biometrico/servidor/shape_predictor_68_face_landmarks.dat
+
+# Entornos virtuales (en cualquier carpeta)
+venv/
+.venv/
+env/
+venv_*/
+**/venv/
+**/.venv/
+**/venv_*/
+paquete_biometrico/**/venv_*/
+
+# Cache Python
+__pycache__/
+*.pyc
+*.pyo
+
+# Archivos temporales
+*.log
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/

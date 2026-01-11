@@ -1,0 +1,56 @@
+{% extends "base.html" %}
+{% block content %}
+<h3>Historial de Acceso</h3>
+<hr>
+<div class="card shadow">
+  <div class="card-body">
+    <table class="table table-striped table-hover">
+      <thead>
+        <tr>
+          <th>Fecha y Hora (Ecuador)</th>
+          <th>Cédula</th>
+          <th>Nombres</th>
+          <th>Método</th> <!-- COLUMNA NUEVA -->
+          <th>Estado</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for log in logs %}
+        <tr>
+          <td>{{ to_ecuador_time(log.timestamp) }}</td>
+          <td>{{ log.user_cedula if log.user_cedula else 'N/A' }}</td>
+          <td>{{ log.user_nombres if log.user_nombres else 'Desconocido' }}</td>
+          <td>
+            <!-- Requisito: Mostrar si fue huella o reconocimiento -->
+            {% if log.access_type == 'facial' %}
+              <span class="badge bg-info">Facial</span>
+            {% elif log.access_type == 'huella' %}
+              <span class="badge bg-primary">Huella</span>
+            {% else %}
+              <span class="badge bg-light text-dark">{{ log.access_type }}</span>
+            {% endif %}
+          </td>
+          <td>
+            {% if log.status == 'authenticated' %}
+              <span class="badge bg-success">Autenticado</span>
+            {% elif log.status == 'denied_unknown' %}
+              <span class="badge bg-danger">Denegado (Desconocido)</span>
+            {% elif log.status == 'denied_spoofing' %}
+              <span class="badge bg-warning text-dark">Denegado (Spoofing)</span>
+            {% elif log.status == 'denied_no_access' %}
+              <span class="badge bg-secondary">Acceso No Permitido</span>
+            {% else %}
+              <span class="badge bg-secondary">{{ log.status }}</span>
+            {% endif %}
+          </td>
+        </tr>
+        {% else %}
+        <tr>
+          <td colspan="5" class="text-center">No hay registros de acceso.</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+{% endblock %}

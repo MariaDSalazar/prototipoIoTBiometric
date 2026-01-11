@@ -1,0 +1,98 @@
+{% extends "base.html" %}
+
+{% block content %}
+<div class="row justify-content-center">
+    <div class="col-md-8">
+        <h3>Enrolar Mis Datos Biométricos</h3>
+        <hr>
+        <div class="alert alert-info">
+            <strong>Instrucciones:</strong>
+            <ol>
+                <li>Asegúrese de que el dispositivo de acceso (Raspberry Pi) esté encendido y conectado.</li>
+                <li>Presione el botón correspondiente al dato que desea registrar (Foto o Huella).</li>
+                <li>Siga las instrucciones que aparecerán en la pantalla del dispositivo de acceso.</li>
+            </ol>
+        </div>
+
+        <div class="card shadow mb-4">
+            <div class="card-body">
+                <h5 class="card-title">Enrolamiento Facial</h5>
+                <p>Se capturará una fotografía para el reconocimiento facial. Mire a la cámara del dispositivo.</p>
+                <button class="btn btn-primary" id="btn-enroll-facial" data-type="facial">
+                    Iniciar Captura de Foto
+                </button>
+                <span class="ms-2">
+                    {% if current_user.has_facial %}
+                        <span class="badge bg-success">Datos Faciales Registrados</span>
+                    {% else %}
+                        <span class="badge bg-warning text-dark">Pendiente</span>
+                    {% endif %}
+                </span>
+            </div>
+        </div>
+
+        <div class="card shadow">
+            <div class="card-body">
+                <h5 class="card-title">Enrolamiento de Huella Dactilar</h5>
+                <p>Se le pedirá que coloque su dedo en el sensor del dispositivo varias veces.</p>
+                <button class="btn btn-info" id="btn-enroll-fingerprint" data-type="fingerprint">
+                    Iniciar Captura de Huella
+                </button>
+                <span class="ms-2">
+                    {% if current_user.has_fingerprint %}
+                        <span class="badge bg-success">Huella Registrada</span>
+                    {% else %}
+                        <span class="badge bg-warning text-dark">Pendiente</span>
+                    {% endif %}
+                </span>
+            </div>
+        </div>
+        
+        <div id="enroll-status" class="alert mt-4" style="display: none;"></div>
+
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+    document.querySelectorAll('.btn').forEach(button => {
+        button.addEventListener('click', (e) => {
+            const type = e.target.dataset.type;
+            const statusDiv = document.getElementById('enroll-status');
+            
+            statusDiv.style.display = 'block';
+            statusDiv.className = 'alert alert-info';
+            statusDiv.innerText = 'Enviando comando a la Raspberry Pi...';
+            e.target.disabled = true;
+
+            fetch("{{ url_for('trigger_capture') }}", {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                },
+                body: JSON.stringify({ type: type })
+            })
+            .then(response => response.json())
+            .then(data => {
+                if(data.status === 'success') {
+                    statusDiv.className = 'alert alert-success';
+                    statusDiv.innerText = data.message;
+                } else {
+                    statusDiv.className = 'alert alert-danger';
+                    statusDiv.innerText = data.message;
+                }
+            })
+            .catch(error => {
+                console.error('Error:', error);
+                statusDiv.className = 'alert alert-danger';
+                statusDiv.innerText = 'Error de conexión con el servidor.';
+            })
+            .finally(() => {
+                // Habilitar el botón después de 5 segundos
+                setTimeout(() => { e.target.disabled = false; }, 5000);
+            });
+        });
+    });
+</script>
+{% endblock %}

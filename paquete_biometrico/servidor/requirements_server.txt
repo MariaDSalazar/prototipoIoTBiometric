@@ -1,0 +1,12 @@
+flask
+flask_sqlalchemy
+flask_bcrypt
+flask_login
+paho-mqtt
+opencv-python
+face_recognition
+dlib
+numpy
+pytz
+scipy
+imutils

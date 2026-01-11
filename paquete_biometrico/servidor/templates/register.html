@@ -1,0 +1,61 @@
+{% extends "base.html" %}
+
+{% block content %}
+<div class="row justify-content-center">
+    <div class="col-md-8">
+        <h3>Registrar Nuevo Usuario</h3>
+        <hr>
+        <div class="card shadow">
+            <div class="card-body">
+                <form method="POST">
+                    <div class="row">
+                        <div class="col-md-6 mb-3">
+                            <label for="cedula" class="form-label">Número de Cédula (10 dígitos)</label>
+                            <input type="text" class="form-control" id="cedula" name="cedula"
+                                   required pattern="[0-9]{10}" maxlength="10"
+                                   title="La cédula debe contener exactamente 10 dígitos numéricos."
+                                   oninput="this.value = this.value.replace(/[^0-9]/g, '');">
+                        </div>
+                        <div class="col-md-6 mb-3">
+                            <label for="nombres" class="form-label">Nombres Completos</label>
+                            <input type="text" class="form-control" id="nombres" name="nombres" required>
+                        </div>
+                    </div>
+                    <div class="row">
+                        <div class="col-md-6 mb-3">
+                            <label for="role" class="form-label">Rol</label>
+                            <select class="form-select" id="role" name="role">
+                                <option value="estudiante" selected>Estudiante</option>
+                                <option value="docente">Docente</option>
+                                <option value="tecnico docente">Técnico Docente</option>
+                                <option value="administrador">Administrador</option>
+                            </select>
+                        </div>
+                        <div class="col-md-6 mb-3">
+                            <label for="access_type" class="form-label">Tipo de Acceso Permitido</label>
+                            <select class="form-select" id="access_type" name="access_type">
+                                <option value="ambos" selected>Ambos (Facial y Huella)</option>
+                                <option value="ninguno">Ninguno (Acceso Web)</option>
+                            </select>
+                        </div>
+                    </div>
+                    <hr>
+                    <!-- Mensaje actualizado -->
+                    <div class="alert alert-info" role="alert">
+                        <strong>Atención:</strong> Al presionar 'Registrar', la contraseña inicial será la cédula.
+                        Se enviará una orden al dispositivo Raspberry Pi para iniciar el proceso de enrolamiento
+                        biométrico (foto y huella) para este usuario. Asegúrese de que el dispositivo esté encendido.
+                    </div>
+                    <hr>
+                    <div class="text-end">
+                        <button type="submit" class="btn btn-primary">
+                            Registrar Usuario e Iniciar Enrolamiento Remoto
+                        </button>
+                    </div>
+                </form>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}
+

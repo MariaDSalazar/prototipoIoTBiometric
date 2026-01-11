@@ -1,0 +1,150 @@
+{% extends "base.html" %}
+
+{% block content %}
+<h3>Gestionar Usuarios</h3>
+<hr>
+<div class="card shadow">
+    <div class="card-body">
+        <table class="table table-striped table-hover">
+            <thead>
+                <tr>
+                    <th>Cédula</th>
+                    <th>Nombres</th>
+                    <th>Rol</th>
+                    <th>Tipo Acceso</th>
+                    <th>Estado Biométrico</th>
+                    <th>Acciones</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for user in users %}
+                <tr>
+                    <td>{{ user.cedula }}</td>
+                    <td>{{ user.nombres }}</td>
+                    <td>{{ user.role }}</td>
+                    <td>{{ user.access_type }}</td>
+                    <td>
+                        {% if user.has_facial %}
+                            <span class="badge bg-info">Facial</span>
+                        {% endif %}
+                        {% if user.has_fingerprint %}
+                            <span class="badge bg-primary">Huella (ID: {{ user.fingerprint_id }})</span>
+                        {% endif %}
+                        {% if not user.has_facial and not user.has_fingerprint %}
+                            <span class="badge bg-secondary">Pendiente</span>
+                        {% endif %}
+                    </td>
+                    <td>
+                        <button class="btn btn-sm btn-warning" 
+                                data-bs-toggle="modal" 
+                                data-bs-target="#editUserModal"
+                                data-user-id="{{ user.id }}"
+                                data-user-nombres="{{ user.nombres }}"
+                                data-user-cedula="{{ user.cedula }}"
+                                data-user-role="{{ user.role }}"
+                                data-user-access="{{ user.access_type }}">
+                            Editar
+                        </button>
+                        
+                        <form action="{{ url_for('delete_user', user_id=user.id) }}" method="POST" class="d-inline"
+                              onsubmit="return confirm('¿Está seguro de eliminar a {{ user.nombres }}? Se borrarán sus fotos y su huella del sensor.');">
+                            <button type="submit" class="btn btn-sm btn-danger">Eliminar</button>
+                        </form>
+                    </td>
+                </tr>
+                {% else %}
+                <tr>
+                    <td colspan="6" class="text-center">No hay usuarios registrados.</td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+</div>
+
+<!-- Modal de Edición -->
+<div class="modal fade" id="editUserModal" tabindex="-1" aria-labelledby="editUserModalLabel" aria-hidden="true">
+  <div class="modal-dialog">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h5 class="modal-title" id="editUserModalLabel">Editar Usuario</h5>
+        <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+      </div>
+      <form id="edit-form" method="POST">
+        <div class="modal-body">
+          <div class="mb-3">
+            <label for="edit-cedula" class="form-label">Cédula</label>
+            <input type="text" class="form-control" id="edit-cedula" name="cedula" required>
+          </div>
+          <div class="mb-3">
+            <label for="edit-nombres" class="form-label">Nombres</label>
+            <input type="text" class="form-control" id="edit-nombres" name="nombres" required>
+          </div>
+          <div class="mb-3">
+            <label for="edit-role" class="form-label">Rol</label>
+            <select class="form-select" id="edit-role" name="role">
+                <option value="estudiante">Estudiante</option>
+                <option value="docente">Docente</option>
+                <option value="tecnico docente">Técnico Docente</option>
+                <option value="administrador">Administrador</option>
+            </select>
+          </div>
+          <div class="mb-3">
+            <label for="edit-access-type" class="form-label">Tipo de Acceso</label>
+            <select class="form-select" id="edit-access-type" name="access_type">
+                <option value="ambos">Ambos(Reconocimiento Facial y Huella dactilar)</option>
+                <option value="ninguno">Ninguno</option>
+            </select>
+            <small class="form-text text-muted">Si cambia de 'ambos' a 'ninguno', los datos (fotografía y huella) se borrarán de la base de datos.</small>
+          </div>
+          <div class="form-check">
+            <input class="form-check-input" type="checkbox" value="true" id="edit-reset-password" name="reset_password">
+            <label class="form-check-label" for="edit-reset-password">
+              Resetear contraseña (la contraseña será la cédula)
+            </label>
+          </div>
+        </div>
+        <div class="modal-footer">
+          <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancelar</button>
+          <button type="submit" class="btn btn-primary">Guardar Cambios</button>
+        </div>
+      </form>
+    </div>
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+    const editUserModal = document.getElementById('editUserModal');
+    editUserModal.addEventListener('show.bs.modal', (event) => {
+        // Botón que activó el modal
+        const button = event.relatedTarget;
+        
+        // Extraer datos de los atributos data-*
+        const userId = button.getAttribute('data-user-id');
+        const cedula = button.getAttribute('data-user-cedula');
+        const nombres = button.getAttribute('data-user-nombres');
+        const role = button.getAttribute('data-user-role');
+        const access = button.getAttribute('data-user-access');
+
+        // Obtener elementos del modal
+        const modalForm = editUserModal.querySelector('#edit-form');
+        const modalCedula = editUserModal.querySelector('#edit-cedula');
+        const modalNombres = editUserModal.querySelector('#edit-nombres');
+        const modalRole = editUserModal.querySelector('#edit-role');
+        const modalAccess = editUserModal.querySelector('#edit-access-type');
+        const modalResetPass = editUserModal.querySelector('#edit-reset-password');
+
+        // Actualizar la acción del formulario
+        modalForm.action = `/users/update/${userId}`;
+
+        // Poblar los campos del modal
+        modalCedula.value = cedula;
+        modalNombres.value = nombres;
+        modalRole.value = role;
+        modalAccess.value = access;
+        modalResetPass.checked = false; // Siempre desmarcado al abrir
+    });
+</script>
+{% endblock %}
