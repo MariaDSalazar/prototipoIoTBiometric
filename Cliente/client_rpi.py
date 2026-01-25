@@ -1,3 +1,8 @@
+print("Iniciando cliente RPI...", flush=True)
+
+import os
+os.environ['DISPLAY'] = ':0'
+
 import cv2
 import paho.mqtt.client as mqtt
 import json
@@ -9,12 +14,18 @@ import sys
 import serial
 import struct
 
+print("Librerias cargadas OK", flush=True)
+
 # Pillow para texto UTF-8 con tildes/ñ en la interfaz
 from PIL import ImageFont, ImageDraw, Image
 
-# Configurar codificación UTF-8 para la consola
+# Configurar codificación UTF-8 para la consola (si es posible)
 import io
-sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8')
+try:
+    if hasattr(sys.stdout, 'buffer'):
+        sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', errors='replace')
+except:
+    pass
 
 # Ruta de fuente TrueType con soporte Unicode (ajusta si es necesario)
 FONT_PATH = "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"
@@ -199,8 +210,8 @@ class AS608:
     def image_to_tz(self, buffer_id=1):
         """Convertir imagen a template en buffer"""
         self._write_packet(self.COMMANDPACKET, [self.IMAGE2TZ, buffer_id])
-        _, confirmation, _ = self._read_packet(timeout_override=0.5)
-        
+        _, confirmation, _ = self._read_packet(timeout_override=1.5)
+
         if confirmation == 0x00:
             return True
         else:
@@ -232,38 +243,54 @@ class AS608:
         else:
             return False
     
-    def search(self, buffer_id=1, start_page=0, page_count=200):
-        """Buscar huella en la base de datos"""
-        data = [self.SEARCH, buffer_id] + list(struct.pack('>H', start_page)) + list(struct.pack('>H', page_count))
-        self._write_packet(self.COMMANDPACKET, data)
-        
-        original_timeout = self.serial.timeout
-        self.serial.timeout = 0.5
-        
-        try:
-            header = self.serial.read(2)
-            if len(header) != 2 or struct.unpack('>H', header)[0] != self.STARTCODE:
-                return None, None
-            address = self.serial.read(4)
-            packet_type = struct.unpack('>B', self.serial.read(1))[0]
-            length = struct.unpack('>H', self.serial.read(2))[0]
-            data = self.serial.read(length)
-            
-            if len(data) != length:
-                return None, None
-                
-            confirmation = data[0]
-            
-            if confirmation == 0x00:
-                page_id = struct.unpack('>H', data[1:3])[0]
-                score = struct.unpack('>H', data[3:5])[0]
-                return page_id, score
-            elif confirmation == 0x09:
-                return None, None
-            else:
-                return None, None
-        finally:
-            self.serial.timeout = original_timeout
+    def search(self, buffer_id=1, start_page=0, page_count=200, retries=3):
+        """Buscar huella en la base de datos con reintentos"""
+        for attempt in range(retries):
+            # Limpiar buffer serial antes de buscar
+            self.serial.reset_input_buffer()
+            time.sleep(0.1)
+
+            data = [self.SEARCH, buffer_id] + list(struct.pack('>H', start_page)) + list(struct.pack('>H', page_count))
+            self._write_packet(self.COMMANDPACKET, data)
+
+            original_timeout = self.serial.timeout
+            self.serial.timeout = 3.0  # Timeout muy largo para búsqueda
+
+            try:
+                header = self.serial.read(2)
+                if len(header) != 2 or struct.unpack('>H', header)[0] != self.STARTCODE:
+                    if attempt < retries - 1:
+                        time.sleep(0.1)
+                        continue
+                    return None, None
+                address = self.serial.read(4)
+                packet_type = struct.unpack('>B', self.serial.read(1))[0]
+                length = struct.unpack('>H', self.serial.read(2))[0]
+                data = self.serial.read(length)
+
+                if len(data) != length:
+                    if attempt < retries - 1:
+                        time.sleep(0.1)
+                        continue
+                    return None, None
+
+                confirmation = data[0]
+
+                if confirmation == 0x00:
+                    page_id = struct.unpack('>H', data[1:3])[0]
+                    score = struct.unpack('>H', data[3:5])[0]
+                    return page_id, score
+                elif confirmation == 0x09:
+                    # Huella no encontrada - no reintentar
+                    return None, None
+                else:
+                    if attempt < retries - 1:
+                        time.sleep(0.1)
+                        continue
+                    return None, None
+            finally:
+                self.serial.timeout = original_timeout
+        return None, None
     
     def delete_model(self, location, count=1):
         """Eliminar modelo(s) de la base de datos"""
@@ -336,18 +363,34 @@ except Exception as e:
     FINGERPRINT_LIB_OK = False
     print(f"Error al importar librerías de huella: {e}")
 
+import os
 try:
-    face_cascade_path = cv2.data.haarcascades + 'haarcascade_frontalface_default.xml'
-    face_cascade = cv2.CascadeClassifier(face_cascade_path)
-    HAAR_OK = not face_cascade.empty()
-    if not HAAR_OK: 
+    # Rutas alternativas para Haar cascade (compatibilidad con diferentes versiones)
+    haar_paths = [
+        '/usr/share/opencv4/haarcascades/haarcascade_frontalface_default.xml',
+        '/usr/share/opencv/haarcascades/haarcascade_frontalface_default.xml',
+    ]
+    if hasattr(cv2, 'data'):
+        haar_paths.insert(0, cv2.data.haarcascades + 'haarcascade_frontalface_default.xml')
+
+    face_cascade = None
+    HAAR_OK = False
+    for path in haar_paths:
+        if os.path.exists(path):
+            face_cascade = cv2.CascadeClassifier(path)
+            if not face_cascade.empty():
+                print(f"HAAR OK: {path}")
+                HAAR_OK = True
+                break
+
+    if not HAAR_OK:
         print("ERROR: No se pudo cargar Haar cascade para CARAS.")
-except Exception as e: 
+except Exception as e:
     HAAR_OK = False
     print(f"Error cargando Haar cascades: {e}")
 
 # ----- CONFIGURACIÓN -----
-MQTT_BROKER_IP = "colocar su ip"
+MQTT_BROKER_IP = "192.168.1.17"  # IP del servidor donde corre Mosquitto
 MQTT_PORT = 1883
 RPI_CLIENT_ID = "rpi_device_01"
 SERIAL_PORT = "/dev/ttyAMA0"
@@ -356,6 +399,7 @@ STREAM_FPS = 10
 FRAME_INTERVAL = 1.0 / STREAM_FPS
 CAMERA_INDEX = 0
 RESULT_DISPLAY_TIME = 2.0
+CAMERA_ZOOM_CROP = 0.0  # 0.0 = sin zoom, 0.2 = 20% de recorte en cada lado
 
 # --- Topics ---
 TOPIC_PUB_FACIAL_STREAM = f"acceso/request/facial/stream/{RPI_CLIENT_ID}"
@@ -375,24 +419,61 @@ last_frame_sent_time = 0
 enroll_user_cedula = None
 enroll_user_nombres = None
 
+# --- PIN para salir ---
+EXIT_PIN = "1234"
+pin_input = ""
+pin_error_message = ""
+pin_error_time = 0
+
 # Variables de pantalla responsiva
 screen_width = 640
 screen_height = 480
 scale_factor = 1.0
 
-mqtt_client = mqtt.Client(mqtt.CallbackAPIVersion.VERSION1, client_id=RPI_CLIENT_ID)
+mqtt_client = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2, client_id=RPI_CLIENT_ID)
 
 # --- Sensor de Huella ---
 finger = None
+SERIAL_PORTS_TO_TRY = ["/dev/ttyAMA0", "/dev/serial0", "/dev/ttyUSB0", "/dev/ttyS0"]
+BAUDRATES_TO_TRY = [57600, 9600, 115200]
+
+print("[HUELLA] Buscando sensor AS608...", flush=True)
 if FINGERPRINT_LIB_OK:
-    try:
-        finger = AS608(port=SERIAL_PORT, baudrate=57600)
-        if not finger.verify_password(): 
-            FINGERPRINT_LIB_OK = False
-            print("Sensor NO encontrado o contraseña incorrecta.")
-    except Exception as e: 
+    for port in SERIAL_PORTS_TO_TRY:
+        for baudrate in BAUDRATES_TO_TRY:
+            print(f"[HUELLA] Probando {port} @ {baudrate}...", flush=True)
+            try:
+                finger = AS608(port=port, baudrate=baudrate)
+                time.sleep(0.5)
+                if finger.verify_password():
+                    print(f"[HUELLA] EXITO! Sensor en {port} @ {baudrate}", flush=True)
+                    SERIAL_PORT = port
+                    break
+                else:
+                    print(f"[HUELLA] {port} @ {baudrate}: sin respuesta", flush=True)
+                    finger.close()
+                    finger = None
+            except Exception as e:
+                if "No such file" not in str(e) and "Permission" not in str(e):
+                    print(f"[HUELLA] {port} @ {baudrate}: {e}", flush=True)
+                if finger:
+                    try:
+                        finger.close()
+                    except:
+                        pass
+                finger = None
+        if finger:
+            break
+
+    if finger is None:
         FINGERPRINT_LIB_OK = False
-        print(f"Error sensor huella: {e}")
+        print("[HUELLA] ERROR: Sensor AS608 no encontrado", flush=True)
+        print("[HUELLA] Verifica: 1) Conexiones TX/RX  2) Alimentacion 3.3V  3) Puerto serial habilitado", flush=True)
+    else:
+        count = finger.get_template_count()
+        print(f"[HUELLA] Huellas almacenadas: {count if count else 0}", flush=True)
+else:
+    print("[HUELLA] ERROR: Libreria serial no disponible", flush=True)
 
 # ==============================================================================
 #                      CLASE BUTTON PARA INTERFAZ TOUCH
@@ -400,25 +481,26 @@ if FINGERPRINT_LIB_OK:
 
 class TouchButton:
     """Clase para manejar botones táctiles responsivos"""
-    def __init__(self, x, y, w, h, text, color, text_color=(255, 255, 255), icon=None):
+    def __init__(self, x, y, w, h, text, color, text_color=(255, 255, 255), icon=None, font_scale_multiplier=1.0):
         # Guardar posiciones base (relativas a 640x480)
         self.base_x = x
         self.base_y = y
         self.base_w = w
         self.base_h = h
-        
+
         # Posiciones actuales (escaladas)
         self.x = x
         self.y = y
         self.w = w
         self.h = h
-        
+
         self.text = text
         self.color = color
         self.text_color = text_color
         self.icon = icon
         self.enabled = True
         self.visible = True
+        self.font_scale_multiplier = font_scale_multiplier  # Para texto más grande
     
     def update_scale(self, scale_x, scale_y):
         """Actualizar escala del botón según resolución"""
@@ -507,12 +589,20 @@ class TouchButton:
                         (center[0] + int(icon_size * 0.8), center[1] + int(icon_size * 0.3)), 
                         self.text_color, max(1, int(2 * icon_scale)))
         
-        # Dibujar texto con escala adaptativa
-        font_scale = 0.45 * min(self.w / 120, self.h / 70)
+        # Dibujar texto con escala adaptativa - CENTRADO
+        font_scale = 0.5 * min(self.w / 120, self.h / 70) * self.font_scale_multiplier
         thickness = max(1, int(font_scale * 2))
+
+        # Calcular tamaño del texto para centrarlo
         text_size = cv2.getTextSize(self.text, cv2.FONT_HERSHEY_SIMPLEX, font_scale, thickness)[0]
         text_x = self.x + (self.w - text_size[0]) // 2
-        text_y = self.y + self.h - int(8 * min(self.w/120, self.h/70)) if self.icon else self.y + (self.h + text_size[1]) // 2
+
+        if self.icon:
+            # Si hay icono, texto en la parte inferior del botón
+            text_y = self.y + self.h - int(12 * min(self.w/120, self.h/70))
+        else:
+            # Sin icono, texto centrado verticalmente
+            text_y = self.y + (self.h + text_size[1]) // 2
 
         # Usar Pillow para soportar tildes/ñ en los textos de los botones
         frame[:] = putText_utf8(
@@ -526,7 +616,7 @@ class TouchButton:
 
     def is_clicked(self, x, y):
         """Verificar si el botón fue clickeado"""
-        if not self.enabled or not self.visible:
+        if not self.visible:
             return False
         return (self.x <= x <= self.x + self.w and self.y <= y <= self.y + self.h)
 
@@ -540,61 +630,141 @@ buttons = {}
 def create_buttons():
     """Crear todos los botones de la interfaz - Posiciones base 640x480"""
     global buttons
-    
-    # Botones principales (IDLE) - En la parte inferior
-    buttons['facial'] = TouchButton(80, 380, 120, 70, "FACIAL", (0, 120, 0), icon="face")
-    buttons['huella'] = TouchButton(220, 380, 120, 70, "HUELLA", (120, 0, 0), icon="finger")
-    buttons['enrolar'] = TouchButton(360, 380, 120, 70, "ENROLAR", (0, 150, 150), icon="enroll")
+
+    # Botones principales (IDLE) - Centrados en la parte inferior
+    # Facial a la izquierda, Huella a la derecha
+    buttons['facial'] = TouchButton(120, 380, 150, 80, "FACIAL", (0, 150, 0), icon="face")
+    buttons['huella'] = TouchButton(370, 380, 150, 80, "HUELLA", (150, 0, 0), icon="finger")
+
+    # Botón enrolar - Centrado debajo (solo visible cuando hay usuario pendiente)
+    buttons['enrolar'] = TouchButton(220, 380, 200, 80, "ENROLAR", (0, 150, 150), icon="enroll")
     buttons['enrolar'].visible = False
-    
+
     # Botón salir - Arriba a la derecha
     buttons['salir'] = TouchButton(550, 10, 80, 40, "SALIR", (180, 0, 0))
-    
+
     # Botón cancelar - Centrado abajo
     buttons['cancelar'] = TouchButton(240, 390, 160, 60, "CANCELAR", (200, 0, 0), icon="cancel")
     buttons['cancelar'].visible = False
-    
+
     # Botón capturar foto
     buttons['capturar'] = TouchButton(240, 390, 160, 60, "CAPTURAR", (0, 180, 0), icon="camera")
     buttons['capturar'].visible = False
+
+    # Teclado numérico para PIN (centrado en pantalla base 640x480)
+    key_w = 70
+    key_h = 55
+    key_margin = 8
+    key_font = 3.0  # Multiplicador de fuente grande para números
+
+    # Calcular posición centrada
+    keypad_total_w = 3 * key_w + 2 * key_margin
+    keypad_start_x = (640 - keypad_total_w) // 2  # Centrado horizontal
+    keypad_start_y = 140  # Posición vertical
+
+    # Fila 1: 1, 2, 3
+    buttons['key_1'] = TouchButton(keypad_start_x, keypad_start_y, key_w, key_h, "1", (70, 70, 70), font_scale_multiplier=key_font)
+    buttons['key_2'] = TouchButton(keypad_start_x + key_w + key_margin, keypad_start_y, key_w, key_h, "2", (70, 70, 70), font_scale_multiplier=key_font)
+    buttons['key_3'] = TouchButton(keypad_start_x + 2*(key_w + key_margin), keypad_start_y, key_w, key_h, "3", (70, 70, 70), font_scale_multiplier=key_font)
+
+    # Fila 2: 4, 5, 6
+    buttons['key_4'] = TouchButton(keypad_start_x, keypad_start_y + key_h + key_margin, key_w, key_h, "4", (70, 70, 70), font_scale_multiplier=key_font)
+    buttons['key_5'] = TouchButton(keypad_start_x + key_w + key_margin, keypad_start_y + key_h + key_margin, key_w, key_h, "5", (70, 70, 70), font_scale_multiplier=key_font)
+    buttons['key_6'] = TouchButton(keypad_start_x + 2*(key_w + key_margin), keypad_start_y + key_h + key_margin, key_w, key_h, "6", (70, 70, 70), font_scale_multiplier=key_font)
+
+    # Fila 3: 7, 8, 9
+    buttons['key_7'] = TouchButton(keypad_start_x, keypad_start_y + 2*(key_h + key_margin), key_w, key_h, "7", (70, 70, 70), font_scale_multiplier=key_font)
+    buttons['key_8'] = TouchButton(keypad_start_x + key_w + key_margin, keypad_start_y + 2*(key_h + key_margin), key_w, key_h, "8", (70, 70, 70), font_scale_multiplier=key_font)
+    buttons['key_9'] = TouchButton(keypad_start_x + 2*(key_w + key_margin), keypad_start_y + 2*(key_h + key_margin), key_w, key_h, "9", (70, 70, 70), font_scale_multiplier=key_font)
+
+    # Fila 4: Borrar, 0, OK
+    buttons['key_del'] = TouchButton(keypad_start_x, keypad_start_y + 3*(key_h + key_margin), key_w, key_h, "<", (180, 100, 0), font_scale_multiplier=key_font)
+    buttons['key_0'] = TouchButton(keypad_start_x + key_w + key_margin, keypad_start_y + 3*(key_h + key_margin), key_w, key_h, "0", (70, 70, 70), font_scale_multiplier=key_font)
+    buttons['key_ok'] = TouchButton(keypad_start_x + 2*(key_w + key_margin), keypad_start_y + 3*(key_h + key_margin), key_w, key_h, "OK", (0, 150, 0), font_scale_multiplier=2.5)
+
+    # Botón cancelar PIN
+    buttons['key_cancel'] = TouchButton(keypad_start_x, keypad_start_y + 4*(key_h + key_margin) + 8, keypad_total_w, 45, "CANCELAR", (180, 0, 0), font_scale_multiplier=1.8)
+
+    # Ocultar teclado por defecto
+    for key in ['key_0', 'key_1', 'key_2', 'key_3', 'key_4', 'key_5', 'key_6', 'key_7', 'key_8', 'key_9', 'key_del', 'key_ok', 'key_cancel']:
+        buttons[key].visible = False
 
 def update_buttons_scale():
     """Actualizar escala de todos los botones"""
     global buttons, screen_width, screen_height
     scale_x = screen_width / 640.0
     scale_y = screen_height / 480.0
-    
+
     for button in buttons.values():
         button.update_scale(scale_x, scale_y)
 
 def mouse_callback(event, x, y, flags, param):
     """Callback para eventos del mouse/touch"""
     global current_state, enroll_user_cedula, enroll_user_nombres
-    
+    global pin_input, pin_error_message, pin_error_time
+
     if event != cv2.EVENT_LBUTTONDOWN:
         return
-    
-    # Botón SALIR (siempre visible)
-    if buttons['salir'].is_clicked(x, y):
-        param['exit'] = True
+
+    # Estado PIN_INPUT - Teclado numérico
+    if current_state == "PIN_INPUT":
+        # Teclas numéricas - máximo 8 dígitos
+        for i in range(10):
+            if buttons[f'key_{i}'].is_clicked(x, y):
+                if len(pin_input) < 8:
+                    pin_input += str(i)
+                    # Limpiar mensaje de error al escribir
+                    pin_error_message = ""
+                return
+
+        # Borrar último dígito
+        if buttons['key_del'].is_clicked(x, y):
+            if len(pin_input) > 0:
+                pin_input = pin_input[:-1]
+            pin_error_message = ""
+            return
+
+        # Confirmar PIN
+        if buttons['key_ok'].is_clicked(x, y):
+            if pin_input == EXIT_PIN:
+                param['exit'] = True
+            else:
+                pin_error_message = "Codigo incorrecto"
+                pin_error_time = time.time() + 2.0
+                pin_input = ""
+            return
+
+        # Cancelar entrada de PIN
+        if buttons['key_cancel'].is_clicked(x, y):
+            pin_input = ""
+            pin_error_message = ""
+            current_state = "IDLE"
+            return
         return
-    
+
+    # Botón SALIR - Muestra teclado PIN
+    if buttons['salir'].is_clicked(x, y):
+        current_state = "PIN_INPUT"
+        pin_input = ""
+        pin_error_message = ""
+        return
+
     # Estado IDLE
     if current_state == "IDLE":
         if buttons['facial'].is_clicked(x, y):
             start_facial_verification()
-        elif buttons['huella'].is_clicked(x, y) and FINGERPRINT_LIB_OK:
+        elif buttons['huella'].is_clicked(x, y):
             capture_and_send_fingerprint_access()
         elif buttons['enrolar'].is_clicked(x, y) and enroll_user_cedula:
             start_admin_enrollment(enroll_user_cedula, enroll_user_nombres)
-    
+
     # Estado ADMIN_ENROLL_PHOTO
     elif current_state == "ADMIN_ENROLL_PHOTO":
         if buttons['capturar'].is_clicked(x, y):
             admin_enroll_capture_photo(param['current_frame'])
         elif buttons['cancelar'].is_clicked(x, y):
             cancel_operation()
-    
+
     # Otros estados con cancelar
     elif current_state in ["VERIFYING_FACIAL", "VERIFYING_FINGER", "ADMIN_ENROLL_FINGER"]:
         if buttons['cancelar'].is_clicked(x, y):
@@ -657,7 +827,10 @@ def draw_ui(frame, message, color=(255, 255, 255)):
     # Configurar visibilidad de botones según estado
     if current_state == "IDLE":
         buttons['facial'].visible = True
-        buttons['huella'].visible = FINGERPRINT_LIB_OK
+        buttons['facial'].enabled = True
+        # Mostrar botón huella siempre, pero deshabilitado si no hay sensor
+        buttons['huella'].visible = True
+        buttons['huella'].enabled = FINGERPRINT_LIB_OK
         buttons['enrolar'].visible = (enroll_user_nombres is not None)
         buttons['cancelar'].visible = False
         buttons['capturar'].visible = False
@@ -722,10 +895,82 @@ def draw_ui(frame, message, color=(255, 255, 255)):
         buttons['cancelar'].visible = False
         buttons['capturar'].visible = False
         buttons['salir'].visible = False
-    
+
+    elif current_state == "PIN_INPUT":
+        buttons['facial'].visible = False
+        buttons['huella'].visible = False
+        buttons['enrolar'].visible = False
+        buttons['cancelar'].visible = False
+        buttons['capturar'].visible = False
+        buttons['salir'].visible = False
+        # Mostrar teclado numérico
+        for key in ['key_0', 'key_1', 'key_2', 'key_3', 'key_4', 'key_5', 'key_6', 'key_7', 'key_8', 'key_9', 'key_del', 'key_ok', 'key_cancel']:
+            buttons[key].visible = True
+
+    # Ocultar teclado si no estamos en PIN_INPUT
+    if current_state != "PIN_INPUT":
+        for key in ['key_0', 'key_1', 'key_2', 'key_3', 'key_4', 'key_5', 'key_6', 'key_7', 'key_8', 'key_9', 'key_del', 'key_ok', 'key_cancel']:
+            buttons[key].visible = False
+
     # Dibujar botones
     for button in buttons.values():
         button.draw(frame)
+
+    # Dibujar interfaz de PIN si estamos en ese estado
+    if current_state == "PIN_INPUT":
+        # Fondo semi-transparente
+        overlay = frame.copy()
+        cv2.rectangle(overlay, (0, 0), (w, h), (20, 20, 20), -1)
+        cv2.addWeighted(overlay, 0.85, frame, 0.15, 0, frame)
+
+        # Título centrado
+        title = "Ingrese codigo para salir"
+        title_font_scale = 0.7 * font_scale_base
+        title_thickness = max(1, int(2 * font_scale_base))
+        title_size = cv2.getTextSize(title, cv2.FONT_HERSHEY_SIMPLEX, title_font_scale, title_thickness)[0]
+        title_x = (w - title_size[0]) // 2
+        frame = putText_utf8(frame, title, (title_x, int(50*scale_y)),
+                            font_scale=title_font_scale, color=(255, 255, 255), thickness=title_thickness)
+
+        # Mostrar PIN ingresado (con asteriscos) - centrado y más grande
+        pin_display = "*" * len(pin_input) if len(pin_input) > 0 else "____"
+        pin_font_scale = 1.5 * font_scale_base
+        pin_box_w = int(180 * scale_x)
+        pin_box_h = int(50 * scale_y)
+        pin_x = (w - pin_box_w) // 2
+        pin_y = int(75 * scale_y)
+        cv2.rectangle(frame, (pin_x, pin_y), (pin_x + pin_box_w, pin_y + pin_box_h), (50, 50, 50), -1)
+        cv2.rectangle(frame, (pin_x, pin_y), (pin_x + pin_box_w, pin_y + pin_box_h), (100, 100, 100), 2)
+        # Centrar texto del PIN dentro del recuadro
+        pin_text_size = cv2.getTextSize(pin_display, cv2.FONT_HERSHEY_SIMPLEX, pin_font_scale, 2)[0]
+        pin_text_x = pin_x + (pin_box_w - pin_text_size[0]) // 2
+        pin_text_y = pin_y + (pin_box_h + pin_text_size[1]) // 2
+        frame = putText_utf8(frame, pin_display, (pin_text_x, pin_text_y),
+                            font_scale=pin_font_scale, color=(255, 255, 255), thickness=2)
+
+        # Redibujar botones del teclado encima del overlay
+        for key in ['key_0', 'key_1', 'key_2', 'key_3', 'key_4', 'key_5', 'key_6', 'key_7', 'key_8', 'key_9', 'key_del', 'key_ok', 'key_cancel']:
+            buttons[key].draw(frame)
+
+        # Mostrar mensaje de error si existe - debajo del botón cancelar, en ROJO
+        if pin_error_message and time.time() < pin_error_time:
+            error_font_scale = 0.7 * font_scale_base
+            error_thickness = max(2, int(2 * font_scale_base))
+            error_size = cv2.getTextSize(pin_error_message, cv2.FONT_HERSHEY_SIMPLEX, error_font_scale, error_thickness)[0]
+            error_x = (w - error_size[0]) // 2
+            error_y = int(460 * scale_y)
+            # Fondo oscuro para el mensaje de error
+            padding = int(10 * min(scale_x, scale_y))
+            cv2.rectangle(frame,
+                         (error_x - padding, error_y - error_size[1] - padding),
+                         (error_x + error_size[0] + padding, error_y + padding),
+                         (40, 40, 40), -1)
+            cv2.rectangle(frame,
+                         (error_x - padding, error_y - error_size[1] - padding),
+                         (error_x + error_size[0] + padding, error_y + padding),
+                         (0, 0, 200), 2)
+            frame = putText_utf8(frame, pin_error_message, (error_x, error_y),
+                                font_scale=error_font_scale, color=(0, 0, 255), thickness=error_thickness)
     
     # Mensaje en IDLE: aparece ENCIMA de los botones
     if current_state == "IDLE" and not enroll_user_nombres:
@@ -814,57 +1059,60 @@ def set_show_result_state(message, status):
 #                      FUNCIONES DE LÓGICA DE ACCESO
 # ==============================================================================
 
+facial_frame_count = 0
+
 def start_facial_verification():
     """Iniciar verificación facial"""
-    global current_state, display_message, display_color, last_frame_sent_time
+    global current_state, display_message, display_color, last_frame_sent_time, facial_frame_count
+    print("[FACIAL] Iniciando verificacion facial...")
     current_state = "VERIFYING_FACIAL"
     display_message = "Iniciando reconocimiento facial..."
     display_color = (0, 255, 255)
     last_frame_sent_time = 0
+    facial_frame_count = 0
 
 def stream_facial_frames(frame):
     """Streaming de frames para reconocimiento facial"""
-    global current_state, display_message, display_color, last_frame_sent_time
-    
+    global current_state, display_message, display_color, last_frame_sent_time, facial_frame_count
+
     if not HAAR_OK:
         set_show_result_state("Error: Haar Cascades", "denied_error")
         return
-    
+
     if current_state != "VERIFYING_FACIAL":
         return
 
-    # Optimización: Reducir resolución para detección
     scale_factor = 0.5
-    small_frame = cv2.resize(frame, None, fx=scale_factor, fy=scale_factor, 
+    small_frame = cv2.resize(frame, None, fx=scale_factor, fy=scale_factor,
                             interpolation=cv2.INTER_LINEAR)
     gray = cv2.cvtColor(small_frame, cv2.COLOR_BGR2GRAY)
-    
-    # Detección de rostros
+
     faces = face_cascade.detectMultiScale(
-        gray, 
+        gray,
         scaleFactor=1.2,
         minNeighbors=3,
         minSize=(50, 50)
     )
-    
+
     if len(faces) == 0:
         if not display_message.startswith("Parpadee"):
             display_message = "Buscando rostro..."
             display_color = (0, 255, 255)
         return
-    
-    # Escalar coordenadas al tamaño original
+
     (x, y, w, h) = faces[0]
     x, y, w, h = int(x/scale_factor), int(y/scale_factor), int(w/scale_factor), int(h/scale_factor)
     cv2.rectangle(frame, (x, y), (x+w, y+h), (0, 255, 0), 2)
-    
-    # Punto en el centro del rostro
+
     center = (x + w//2, y + h//2)
     cv2.circle(frame, center, 5, (0, 255, 0), -1)
-    
+
     current_time = time.time()
     if (current_time - last_frame_sent_time) > FRAME_INTERVAL:
         last_frame_sent_time = current_time
+        facial_frame_count += 1
+        if facial_frame_count % 10 == 1:
+            print(f"[FACIAL] Rostro detectado - Frame #{facial_frame_count} enviado")
         
         # Reducir resolución del frame enviado
         send_frame = cv2.resize(frame, (320, 240), interpolation=cv2.INTER_LINEAR)
@@ -883,58 +1131,89 @@ def stream_facial_frames(frame):
 def capture_and_send_fingerprint_access():
     """Capturar y enviar huella dactilar"""
     global current_state, display_message, display_color
-    
+
+    print("[HUELLA] Iniciando verificacion de huella...")
+
     if not FINGERPRINT_LIB_OK or not finger:
+        print("[HUELLA] ERROR: Sensor no disponible")
         set_show_result_state("Sensor de huella no disponible", "denied_error")
         return
-    
+
     current_state = "VERIFYING_FINGER"
     display_message = "Coloque su dedo en el sensor..."
     display_color = (255, 255, 0)
-    
+
     def task():
         global current_state, display_message
         try:
-            print("Esperando huella para acceso...")
-            max_attempts = 50
+            print("[HUELLA] Esperando dedo en el sensor...")
+            # Limpiar buffer serial antes de comenzar
+            finger.serial.reset_input_buffer()
+
+            max_attempts = 100  # Más intentos
             attempts = 0
-            
+
             while current_state == "VERIFYING_FINGER" and attempts < max_attempts:
                 if finger.get_image():
+                    print("[HUELLA] Dedo detectado!")
                     break
                 time.sleep(0.05)
                 attempts += 1
-            
+
             if current_state != "VERIFYING_FINGER":
+                print("[HUELLA] Operacion cancelada")
                 return
-            
+
             if attempts >= max_attempts:
+                print("[HUELLA] Timeout: No se detecto huella")
                 set_show_result_state("Tiempo agotado: No se detectó huella", "denied_error")
                 return
-            
+
             display_message = "Procesando huella..."
-            
-            if not finger.image_to_tz(1):
+            print("[HUELLA] Procesando imagen...")
+
+            # Esperar un momento para que el sensor estabilice
+            time.sleep(0.1)
+
+            # Reintentar image_to_tz si falla
+            success = False
+            for retry in range(3):
+                if finger.image_to_tz(1):
+                    success = True
+                    break
+                print(f"[HUELLA] Reintento image_to_tz ({retry+1}/3)")
+                time.sleep(0.1)
+
+            if not success:
+                print("[HUELLA] ERROR: No se pudo procesar la imagen")
                 set_show_result_state("Error al procesar huella", "denied_error")
                 return
-            
-            page_id, score = finger.search(1)
-            
+
+            print("[HUELLA] Buscando huella en base de datos...")
+            display_message = "Buscando huella..."
+
+            # La función search ya tiene reintentos incorporados
+            page_id, score = finger.search(1, retries=3)
+
             if page_id is None:
+                print("[HUELLA] Huella NO encontrada en base de datos")
                 set_show_result_state("Huella no reconocida", "denied_unknown")
                 return
-            
+
             fingerprint_id = page_id
-            print(f"Huella encontrada! ID: {fingerprint_id}, Score: {score}")
-            
+            print(f"[HUELLA] ENCONTRADA! ID: {fingerprint_id}, Score: {score}")
+
             payload = {"fingerprint_id": fingerprint_id}
             mqtt_client.publish(TOPIC_PUB_FINGER_REQ, json.dumps(payload))
+            print(f"[HUELLA] Enviado a servidor para verificar acceso")
             display_message = "Verificando acceso..."
-            
+
         except Exception as e:
             print(f"Error sensor huella: {e}")
+            import traceback
+            traceback.print_exc()
             set_show_result_state("Error del sensor", "denied_error")
-    
+
     threading.Thread(target=task, daemon=True).start()
 
 def start_admin_enrollment(cedula, nombres):
@@ -1051,15 +1330,15 @@ def delete_fingerprint_from_sensor(fingerprint_id):
 #                      FUNCIONES MQTT
 # ==============================================================================
 
-def on_connect(client, userdata, flags, rc):
-    """Callback de conexión MQTT"""
-    if rc == 0:
+def on_connect(client, userdata, flags, reason_code, properties):
+    """Callback de conexión MQTT (VERSION2)"""
+    if reason_code == 0:
         print(f"Conectado Broker MQTT: {MQTT_BROKER_IP}")
         client.subscribe(TOPIC_SUB_RESPONSE)
         client.subscribe(TOPIC_SUB_COMMAND)
         print(f"Suscrito a {TOPIC_SUB_RESPONSE} y {TOPIC_SUB_COMMAND}")
     else:
-        print(f"Falló conexión MQTT: {rc}")
+        print(f"Falló conexión MQTT: {reason_code}")
 
 def on_message(client, userdata, msg):
     """Callback de mensajes MQTT"""
@@ -1149,18 +1428,30 @@ def main():
     global current_state, display_message, display_color, result_end_time
     global enroll_user_cedula, enroll_user_nombres
     global screen_width, screen_height
-    
+
+    print("=" * 50)
+    print("   CLIENTE RPI - SISTEMA DE ACCESO BIOMETRICO")
+    print("=" * 50)
+    print(f"[CONFIG] Broker MQTT: {MQTT_BROKER_IP}:{MQTT_PORT}")
+    print(f"[CONFIG] Puerto serial: {SERIAL_PORT}")
+    print(f"[CONFIG] Camara index: {CAMERA_INDEX}")
+    print(f"[STATUS] Haar Cascade: {'OK' if HAAR_OK else 'ERROR'}")
+    print(f"[STATUS] Sensor huella: {'OK' if FINGERPRINT_LIB_OK else 'NO DISPONIBLE'}")
+    print("=" * 50)
+
     cap = None
     exit_flag = {'exit': False, 'current_frame': None}
-    
+
     # Conectar MQTT
+    print(f"[MQTT] Conectando a {MQTT_BROKER_IP}:{MQTT_PORT}...")
     try:
         mqtt_client.on_connect = on_connect
         mqtt_client.on_message = on_message
         mqtt_client.connect(MQTT_BROKER_IP, MQTT_PORT, 60)
         mqtt_client.loop_start()
+        print("[MQTT] Conexion iniciada")
     except Exception as e:
-        print(f"Error MQTT: {e}")
+        print(f"[MQTT] ERROR: {e}")
         return
     
     # Inicializar cámara
@@ -1179,6 +1470,8 @@ def main():
     cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
     cap.set(cv2.CAP_PROP_FPS, 30)
     cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+    # Desactivar zoom digital si la cámara lo soporta
+    cap.set(cv2.CAP_PROP_ZOOM, 0)
     
     ret, _ = cap.read()
     if not ret:
@@ -1189,29 +1482,35 @@ def main():
     
     print("Cámara iniciada y lista.")
     
-    # Crear ventana y detectar resolución de pantalla
-    window_name = "Sistema de Acceso - Touch"
-    cv2.namedWindow(window_name, cv2.WND_PROP_FULLSCREEN)
-    cv2.setWindowProperty(window_name, cv2.WND_PROP_FULLSCREEN, cv2.WINDOW_FULLSCREEN)
-    
-    # Obtener resolución real de la pantalla
-    temp_frame = np.zeros((480, 640, 3), dtype=np.uint8)
-    cv2.imshow(window_name, temp_frame)
-    cv2.waitKey(100)
-    
+    window_name = "Sistema de Acceso"
+    screen_width = 800
+    screen_height = 480
+
     try:
-        x, y, w, h = cv2.getWindowImageRect(window_name)
-        if w > 0 and h > 0:
-            screen_width = w
-            screen_height = h
-        else:
-            screen_width = 640
-            screen_height = 480
+        with open('/sys/class/graphics/fb0/virtual_size', 'r') as f:
+            res = f.read().strip().split(',')
+            screen_width = int(res[0])
+            screen_height = int(res[1])
     except:
-        screen_width = 640
-        screen_height = 480
-    
-    print(f"Resolución detectada: {screen_width}x{screen_height}")
+        try:
+            import subprocess
+            result = subprocess.run(['xrandr'], capture_output=True, text=True)
+            for line in result.stdout.split('\n'):
+                if '*' in line:
+                    res = line.split()[0].split('x')
+                    screen_width = int(res[0])
+                    screen_height = int(res[1])
+                    break
+        except:
+            pass
+
+    print(f"Resolucion pantalla: {screen_width}x{screen_height}")
+
+    cv2.namedWindow(window_name, cv2.WINDOW_NORMAL | cv2.WINDOW_GUI_NORMAL)
+    cv2.setWindowProperty(window_name, cv2.WND_PROP_FULLSCREEN, cv2.WINDOW_FULLSCREEN)
+    cv2.moveWindow(window_name, 0, 0)
+    cv2.resizeWindow(window_name, screen_width, screen_height)
+    cv2.setWindowProperty(window_name, cv2.WND_PROP_FULLSCREEN, cv2.WINDOW_FULLSCREEN)
     
     # Crear botones y actualizar escala
     create_buttons()
@@ -1276,7 +1575,11 @@ def main():
                 continue
             if active_frame is None:
                 active_frame = np.zeros((screen_height, screen_width, 3), dtype=np.uint8)
-        
+
+        elif current_state == "PIN_INPUT":
+            # Mantener el frame de la cámara como fondo
+            pass
+
         # Dibujar UI
         frame_to_show = active_frame if active_frame is not None else np.zeros((screen_height, screen_width, 3), dtype=np.uint8)
         frame_ui = draw_ui(frame_to_show.copy(), display_message, display_color)
@@ -1288,8 +1591,9 @@ def main():
     # Limpieza final
     if cap is not None and cap.isOpened():
         cap.release()
-    if finger and FINGERPRINT_LIB_OK:
-        finger.close()
+    # NO cerrar el sensor de huella - debe permanecer encendido siempre
+    # if finger and FINGERPRINT_LIB_OK:
+    #     finger.close()
     cv2.destroyAllWindows()
     mqtt_client.loop_stop()
     print("Cliente RPi detenido.")
