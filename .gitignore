@@ -1,0 +1,7 @@
+/Servidor/.venv/
+/.claude/
+/.idea/
+/Servidor/database.db
+__pycache__/
+*.pyc
+/Servidor/dataset/
