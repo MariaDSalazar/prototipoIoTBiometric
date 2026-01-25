@@ -1,4 +1,13 @@
-print("Iniciando cliente RPI...", flush=True)
+import sys
+
+# Deshabilitar buffering de stdout para ver logs en tiempo real
+if hasattr(sys.stdout, 'reconfigure'):
+    sys.stdout.reconfigure(line_buffering=True)
+else:
+    import io
+    sys.stdout = io.TextIOWrapper(sys.stdout.buffer, line_buffering=True)
+
+print("Iniciando cliente RPI...")
 
 import os
 os.environ['DISPLAY'] = ':0'
@@ -10,22 +19,145 @@ import time
 import numpy as np
 import base64
 import threading
-import sys
 import serial
 import struct
 
+# GPIO para el relé
+try:
+    import RPi.GPIO as GPIO
+    GPIO_OK = True
+except ImportError:
+    GPIO_OK = False
+    print("WARN: RPi.GPIO no disponible")
+
 print("Librerias cargadas OK", flush=True)
+
+# ==============================================================================
+#                      CONFIGURACIÓN DEL RELÉ
+# ==============================================================================
+RELAY_PIN = 17  # GPIO17 (Pin físico 11) - Cambiar según tu conexión
+RELAY_ACTIVE_LOW = True  # True si el relé se activa con LOW (la mayoría de módulos)
+RELAY_OPEN_TIME = 4  # Segundos que permanece abierto
+
+# Variables de control para evitar interferencia
+relay_is_active = False  # Flag para evitar activaciones múltiples
+relay_lock = threading.Lock()  # Lock para sincronización de hilos
+last_relay_activation = 0  # Timestamp de última activación
+RELAY_COOLDOWN = 5  # Segundos mínimos entre activaciones
+
+def setup_relay():
+    """Configurar el pin GPIO para el relé con protecciones"""
+    if not GPIO_OK:
+        return False
+    try:
+        GPIO.setmode(GPIO.BCM)
+        GPIO.setwarnings(False)
+
+        # Configurar pin como salida con pull-up interno para evitar estados flotantes
+        GPIO.setup(RELAY_PIN, GPIO.OUT, initial=GPIO.HIGH if RELAY_ACTIVE_LOW else GPIO.LOW)
+
+        # Pequeña pausa para estabilización
+        time.sleep(0.1)
+
+        # Asegurar estado inicial desactivado
+        if RELAY_ACTIVE_LOW:
+            GPIO.output(RELAY_PIN, GPIO.HIGH)  # HIGH = desactivado
+        else:
+            GPIO.output(RELAY_PIN, GPIO.LOW)   # LOW = desactivado
+
+        print(f"[RELAY] Configurado en GPIO{RELAY_PIN} (Active {'LOW' if RELAY_ACTIVE_LOW else 'HIGH'})")
+        return True
+    except Exception as e:
+        print(f"[RELAY] Error configurando: {e}")
+        return False
+
+def activate_relay():
+    """Activar el relé para abrir la puerta/cerradura con protecciones"""
+    global relay_is_active, last_relay_activation
+
+    if not GPIO_OK:
+        print("[RELAY] GPIO no disponible")
+        return False
+
+    # Verificar cooldown para evitar activaciones muy seguidas
+    current_time = time.time()
+    if current_time - last_relay_activation < RELAY_COOLDOWN:
+        print(f"[RELAY] Cooldown activo, espere {RELAY_COOLDOWN - (current_time - last_relay_activation):.1f}s")
+        return False
+
+    # Usar lock para evitar condiciones de carrera
+    if not relay_lock.acquire(blocking=False):
+        print("[RELAY] Activación en progreso, ignorando")
+        return False
+
+    if relay_is_active:
+        relay_lock.release()
+        print("[RELAY] Ya está activo, ignorando")
+        return False
+
+    def relay_task():
+        global relay_is_active, last_relay_activation
+        try:
+            relay_is_active = True
+            last_relay_activation = time.time()
+            print(f"[RELAY] Activando por {RELAY_OPEN_TIME} segundos...")
+
+            # Activar relé con pequeña pausa para evitar picos
+            time.sleep(0.05)  # 50ms de estabilización
+            if RELAY_ACTIVE_LOW:
+                GPIO.output(RELAY_PIN, GPIO.LOW)   # LOW = activado
+            else:
+                GPIO.output(RELAY_PIN, GPIO.HIGH)  # HIGH = activado
+
+            # Esperar el tiempo configurado
+            time.sleep(RELAY_OPEN_TIME)
+
+            # Desactivar relé
+            if RELAY_ACTIVE_LOW:
+                GPIO.output(RELAY_PIN, GPIO.HIGH)  # HIGH = desactivado
+            else:
+                GPIO.output(RELAY_PIN, GPIO.LOW)   # LOW = desactivado
+
+            time.sleep(0.05)  # 50ms de estabilización
+            print("[RELAY] Desactivado")
+        except Exception as e:
+            print(f"[RELAY] Error: {e}")
+            # En caso de error, asegurar que el relé quede desactivado
+            try:
+                if RELAY_ACTIVE_LOW:
+                    GPIO.output(RELAY_PIN, GPIO.HIGH)
+                else:
+                    GPIO.output(RELAY_PIN, GPIO.LOW)
+            except:
+                pass
+        finally:
+            relay_is_active = False
+            relay_lock.release()
+
+    # Ejecutar en hilo separado para no bloquear la UI
+    threading.Thread(target=relay_task, daemon=True).start()
+    return True
+
+def cleanup_relay():
+    """Limpiar configuración GPIO al salir"""
+    global relay_is_active
+    if GPIO_OK:
+        try:
+            # Asegurar que el relé esté desactivado antes de limpiar
+            if RELAY_ACTIVE_LOW:
+                GPIO.output(RELAY_PIN, GPIO.HIGH)
+            else:
+                GPIO.output(RELAY_PIN, GPIO.LOW)
+            time.sleep(0.1)
+            GPIO.cleanup(RELAY_PIN)
+            relay_is_active = False
+        except:
+            pass
 
 # Pillow para texto UTF-8 con tildes/ñ en la interfaz
 from PIL import ImageFont, ImageDraw, Image
 
-# Configurar codificación UTF-8 para la consola (si es posible)
-import io
-try:
-    if hasattr(sys.stdout, 'buffer'):
-        sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', errors='replace')
-except:
-    pass
+# Nota: La codificación UTF-8 y line buffering ya están configurados al inicio del script
 
 # Ruta de fuente TrueType con soporte Unicode (ajusta si es necesario)
 FONT_PATH = "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"
@@ -1045,7 +1177,8 @@ def set_show_result_state(message, status):
     global current_state, display_message, display_color, result_end_time
     current_state = "SHOW_RESULT"
     display_message = message
-    if status == "authenticated":
+
+    if status == "authenticated" or status == "enroll_ok":
         display_color = (0, 255, 0)
     elif status.startswith("denied"):
         display_color = (0, 0, 255)
@@ -1053,6 +1186,7 @@ def set_show_result_state(message, status):
         display_color = (0, 255, 255)
     else:
         display_color = (255, 255, 0)
+
     result_end_time = time.time() + RESULT_DISPLAY_TIME
 
 # ==============================================================================
@@ -1385,7 +1519,9 @@ def on_message(client, userdata, msg):
             # Resultados finales de acceso
             message = ""
             if status == "authenticated":
-                message = f"ACCESO CONCEDIDO: {nombres}"
+                message = f"Bienvenido, {nombres}"
+                # Activar el relé para abrir la puerta
+                activate_relay()
             elif status == "denied_unknown":
                 message = "ACCESO DENEGADO: Desconocido"
             elif status == "denied_no_access":
@@ -1437,6 +1573,10 @@ def main():
     print(f"[CONFIG] Camara index: {CAMERA_INDEX}")
     print(f"[STATUS] Haar Cascade: {'OK' if HAAR_OK else 'ERROR'}")
     print(f"[STATUS] Sensor huella: {'OK' if FINGERPRINT_LIB_OK else 'NO DISPONIBLE'}")
+
+    # Inicializar relé
+    relay_ok = setup_relay()
+    print(f"[STATUS] Rele GPIO{RELAY_PIN}: {'OK' if relay_ok else 'NO DISPONIBLE'}")
     print("=" * 50)
 
     cap = None
@@ -1463,6 +1603,7 @@ def main():
         if not cap.isOpened():
             print("ERROR FATAL: No se puede abrir ninguna cámara.")
             mqtt_client.loop_stop()
+            cleanup_relay()
             return
     
     # Configuración optimizada de cámara
@@ -1470,8 +1611,6 @@ def main():
     cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
     cap.set(cv2.CAP_PROP_FPS, 30)
     cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
-    # Desactivar zoom digital si la cámara lo soporta
-    cap.set(cv2.CAP_PROP_ZOOM, 0)
     
     ret, _ = cap.read()
     if not ret:
@@ -1520,11 +1659,12 @@ def main():
     
     print("Cliente RPi iniciado con interfaz touch.")
     active_frame = None
-    
+
     # Loop principal
     while not exit_flag['exit']:
         frame = None
-        
+
+        # Leer frame de la cámara
         if cap is not None and cap.isOpened():
             ret, frame = cap.read()
             if ret:
@@ -1534,42 +1674,38 @@ def main():
                 active_frame = frame.copy()
                 exit_flag['current_frame'] = frame.copy()
             else:
-                print("Error leyendo frame.")
-                active_frame = np.zeros((screen_height, screen_width, 3), dtype=np.uint8)
-                if current_state not in ["IDLE", "SHOW_RESULT"]:
-                    current_state = "IDLE"
+                # Si falla lectura, mantener el último frame válido
+                if active_frame is None:
+                    active_frame = np.zeros((screen_height, screen_width, 3), dtype=np.uint8)
         else:
-            active_frame = np.zeros((screen_height, screen_width, 3), dtype=np.uint8)
-            if current_state not in ["IDLE", "SHOW_RESULT"]:
-                print("ERROR: Cámara no disponible. Volviendo a IDLE.")
-                current_state = "IDLE"
-        
-        # Lógica de estados
+            if active_frame is None:
+                active_frame = np.zeros((screen_height, screen_width, 3), dtype=np.uint8)
+
+        # Lógica de estados - La cámara siempre muestra el frame actual
         if current_state == "IDLE":
             display_message = "Seleccione el método de acceso"
             if enroll_user_nombres:
                 display_message = f"Listo para enrolar: {enroll_user_nombres[:22]}"
             display_color = (255, 255, 255)
-            if active_frame is None:
-                active_frame = np.zeros((screen_height, screen_width, 3), dtype=np.uint8)
-        
+
         elif current_state == "VERIFYING_FACIAL":
-            if frame is not None:
+            if active_frame is not None:
                 stream_facial_frames(active_frame)
-            else:
-                current_state = "IDLE"
-        
+
         elif current_state == "VERIFYING_FINGER":
-            active_frame = np.zeros((screen_height, screen_width, 3), dtype=np.uint8)
-        
+            # Mantener cámara activa durante verificación de huella
+            pass
+
         elif current_state == "ADMIN_ENROLL_PHOTO":
-            if frame is None:
-                current_state = "IDLE"
-        
+            # Mantener cámara activa para capturar foto
+            pass
+
         elif current_state == "ADMIN_ENROLL_FINGER":
-            active_frame = np.zeros((screen_height, screen_width, 3), dtype=np.uint8)
+            # Mantener cámara activa durante enrolamiento de huella
+            pass
         
         elif current_state == "SHOW_RESULT":
+            # Timeout automático para volver a IDLE
             if time.time() > result_end_time:
                 current_state = "IDLE"
                 continue
@@ -1594,6 +1730,8 @@ def main():
     # NO cerrar el sensor de huella - debe permanecer encendido siempre
     # if finger and FINGERPRINT_LIB_OK:
     #     finger.close()
+    # Limpiar GPIO del relé
+    cleanup_relay()
     cv2.destroyAllWindows()
     mqtt_client.loop_stop()
     print("Cliente RPi detenido.")
