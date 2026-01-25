@@ -529,7 +529,7 @@ SERIAL_PORT = "/dev/ttyAMA0"
 JPEG_QUALITY = 60
 STREAM_FPS = 10
 FRAME_INTERVAL = 1.0 / STREAM_FPS
-CAMERA_INDEX = 0
+CAMERA_INDEX = 1  # Cámara USB en /dev/video1
 RESULT_DISPLAY_TIME = 2.0
 CAMERA_ZOOM_CROP = 0.0  # 0.0 = sin zoom, 0.2 = 20% de recorte en cada lado
 
@@ -547,6 +547,7 @@ current_state = "IDLE"
 display_message = "Seleccione método de acceso"
 display_color = (255, 255, 255)
 result_end_time = 0
+result_is_auth_success = False  # Para pantalla de verificación exitosa con botón OK
 last_frame_sent_time = 0
 enroll_user_cedula = None
 enroll_user_nombres = None
@@ -783,6 +784,10 @@ def create_buttons():
     buttons['capturar'] = TouchButton(240, 390, 160, 60, "CAPTURAR", (0, 180, 0), icon="camera")
     buttons['capturar'].visible = False
 
+    # Botón OK para pantalla de verificación exitosa - Centrado
+    buttons['result_ok'] = TouchButton(220, 350, 200, 70, "OK", (0, 120, 0), font_scale_multiplier=2.0)
+    buttons['result_ok'].visible = False
+
     # Teclado numérico para PIN (centrado en pantalla base 640x480)
     key_w = 70
     key_h = 55
@@ -902,9 +907,14 @@ def mouse_callback(event, x, y, flags, param):
         if buttons['cancelar'].is_clicked(x, y):
             cancel_operation()
 
+    # Estado SHOW_RESULT - Botón OK para volver a IDLE
+    elif current_state == "SHOW_RESULT":
+        if buttons['result_ok'].is_clicked(x, y):
+            current_state = "IDLE"
+
 def draw_ui(frame, message, color=(255, 255, 255)):
     """Dibujar interfaz de usuario responsiva"""
-    global buttons, screen_width, screen_height
+    global buttons, screen_width, screen_height, result_is_auth_success
     
     if frame is None:
         frame = np.zeros((screen_height, screen_width, 3), dtype=np.uint8)
@@ -1027,6 +1037,8 @@ def draw_ui(frame, message, color=(255, 255, 255)):
         buttons['cancelar'].visible = False
         buttons['capturar'].visible = False
         buttons['salir'].visible = False
+        # Mostrar botón OK solo si es autenticación exitosa
+        buttons['result_ok'].visible = result_is_auth_success
 
     elif current_state == "PIN_INPUT":
         buttons['facial'].visible = False
@@ -1043,6 +1055,62 @@ def draw_ui(frame, message, color=(255, 255, 255)):
     if current_state != "PIN_INPUT":
         for key in ['key_0', 'key_1', 'key_2', 'key_3', 'key_4', 'key_5', 'key_6', 'key_7', 'key_8', 'key_9', 'key_del', 'key_ok', 'key_cancel']:
             buttons[key].visible = False
+
+    # Ocultar botón result_ok si no estamos en SHOW_RESULT con autenticación exitosa
+    if current_state != "SHOW_RESULT" or not result_is_auth_success:
+        buttons['result_ok'].visible = False
+
+    # Dibujar pantalla sólida de verificación exitosa
+    if current_state == "SHOW_RESULT" and result_is_auth_success:
+        # Fondo sólido verde
+        frame[:] = (0, 100, 0)  # Verde oscuro BGR
+        
+        # Calcular escalas
+        scale_x = w / 640.0
+        scale_y = h / 480.0
+        font_scale_base = min(scale_x, scale_y)
+        
+        # Rectángulo central con borde
+        rect_margin = int(40 * min(scale_x, scale_y))
+        cv2.rectangle(frame, (rect_margin, rect_margin), 
+                     (w - rect_margin, h - rect_margin), (0, 180, 0), -1)
+        cv2.rectangle(frame, (rect_margin, rect_margin), 
+                     (w - rect_margin, h - rect_margin), (255, 255, 255), 3)
+        
+        # Icono de check (círculo con palomita)
+        icon_center_x = w // 2
+        icon_center_y = int(150 * scale_y)
+        icon_radius = int(60 * min(scale_x, scale_y))
+        cv2.circle(frame, (icon_center_x, icon_center_y), icon_radius, (255, 255, 255), 4)
+        # Dibujar palomita
+        check_start = (icon_center_x - int(30 * min(scale_x, scale_y)), icon_center_y)
+        check_mid = (icon_center_x - int(5 * min(scale_x, scale_y)), icon_center_y + int(25 * min(scale_x, scale_y)))
+        check_end = (icon_center_x + int(35 * min(scale_x, scale_y)), icon_center_y - int(25 * min(scale_x, scale_y)))
+        cv2.line(frame, check_start, check_mid, (255, 255, 255), 4)
+        cv2.line(frame, check_mid, check_end, (255, 255, 255), 4)
+        
+        # Título "VERIFICACIÓN EXITOSA"
+        title = "VERIFICACION EXITOSA"
+        title_font_scale = 1.0 * font_scale_base
+        title_thickness = max(2, int(3 * font_scale_base))
+        title_size = cv2.getTextSize(title, cv2.FONT_HERSHEY_SIMPLEX, title_font_scale, title_thickness)[0]
+        title_x = (w - title_size[0]) // 2
+        title_y = int(250 * scale_y)
+        frame = putText_utf8(frame, title, (title_x, title_y),
+                            font_scale=title_font_scale, color=(255, 255, 255), thickness=title_thickness)
+        
+        # Mensaje de bienvenida
+        msg_font_scale = 0.7 * font_scale_base
+        msg_thickness = max(1, int(2 * font_scale_base))
+        msg_size = cv2.getTextSize(message, cv2.FONT_HERSHEY_SIMPLEX, msg_font_scale, msg_thickness)[0]
+        msg_x = (w - msg_size[0]) // 2
+        msg_y = int(300 * scale_y)
+        frame = putText_utf8(frame, message, (msg_x, msg_y),
+                            font_scale=msg_font_scale, color=(255, 255, 255), thickness=msg_thickness)
+        
+        # Dibujar solo el botón OK
+        buttons['result_ok'].draw(frame)
+        return frame
 
     # Dibujar botones
     for button in buttons.values():
@@ -1174,18 +1242,22 @@ def cancel_operation():
 
 def set_show_result_state(message, status):
     """Mostrar resultado en pantalla"""
-    global current_state, display_message, display_color, result_end_time
+    global current_state, display_message, display_color, result_end_time, result_is_auth_success
     current_state = "SHOW_RESULT"
     display_message = message
 
     if status == "authenticated" or status == "enroll_ok":
         display_color = (0, 255, 0)
+        result_is_auth_success = (status == "authenticated")
     elif status.startswith("denied"):
         display_color = (0, 0, 255)
+        result_is_auth_success = False
     elif status.startswith("enroll"):
         display_color = (0, 255, 255)
+        result_is_auth_success = False
     else:
         display_color = (255, 255, 0)
+        result_is_auth_success = False
 
     result_end_time = time.time() + RESULT_DISPLAY_TIME
 
@@ -1561,7 +1633,7 @@ def on_message(client, userdata, msg):
 
 def main():
     """Función principal del sistema"""
-    global current_state, display_message, display_color, result_end_time
+    global current_state, display_message, display_color, result_end_time, result_is_auth_success
     global enroll_user_cedula, enroll_user_nombres
     global screen_width, screen_height
 
@@ -1594,17 +1666,36 @@ def main():
         print(f"[MQTT] ERROR: {e}")
         return
     
-    # Inicializar cámara
-    print(f"Iniciando cámara en índice {CAMERA_INDEX} con backend V4L2...")
-    cap = cv2.VideoCapture(CAMERA_INDEX, cv2.CAP_V4L2)
-    if not cap.isOpened():
-        print(f"WARN: Falló índice {CAMERA_INDEX}. Intentando índice 0...")
-        cap = cv2.VideoCapture(0, cv2.CAP_V4L2)
-        if not cap.isOpened():
-            print("ERROR FATAL: No se puede abrir ninguna cámara.")
-            mqtt_client.loop_stop()
-            cleanup_relay()
-            return
+    # Inicializar cámara - Intentar múltiples índices y backends
+    print(f"Iniciando cámara...")
+    cap = None
+    camera_indices = [CAMERA_INDEX] + [i for i in [0, 1, 2] if i != CAMERA_INDEX]
+    
+    for idx in camera_indices:
+        print(f"  Intentando índice {idx} con V4L2...")
+        cap = cv2.VideoCapture(idx, cv2.CAP_V4L2)
+        if cap.isOpened():
+            print(f"  OK! Cámara abierta en índice {idx}")
+            break
+        cap.release()
+        
+        # Intentar sin backend específico
+        print(f"  Intentando índice {idx} sin backend...")
+        cap = cv2.VideoCapture(idx)
+        if cap.isOpened():
+            print(f"  OK! Cámara abierta en índice {idx}")
+            break
+        cap.release()
+    
+    if cap is None or not cap.isOpened():
+        print("ERROR FATAL: No se puede abrir ninguna cámara.")
+        print("Verifica:")
+        print("  - Que la cámara esté conectada (ls /dev/video*)")
+        print("  - Que no esté en uso por otro proceso (fuser /dev/video0)")
+        print("  - Si es CSI, habilita Legacy Camera en raspi-config")
+        mqtt_client.loop_stop()
+        cleanup_relay()
+        return
     
     # Configuración optimizada de cámara
     cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
@@ -1705,8 +1796,9 @@ def main():
             pass
         
         elif current_state == "SHOW_RESULT":
-            # Timeout automático para volver a IDLE
-            if time.time() > result_end_time:
+            # Timeout automático para volver a IDLE (solo si NO es autenticación exitosa)
+            # Si es autenticación exitosa, esperar al botón OK
+            if not result_is_auth_success and time.time() > result_end_time:
                 current_state = "IDLE"
                 continue
             if active_frame is None:
