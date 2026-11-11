@@ -1,5 +1,7 @@
 # Prototipo IoT Biométrico
 
+> **Requiere hardware.** Para ejecutarlo completo se necesitan una Raspberry Pi con cámara, un lector de huellas y un broker MQTT; sin ellos solo arranca la interfaz web del servidor.
+
 Sistema de control de acceso que combina reconocimiento facial (con verificación de parpadeo) y lectura de huellas dactilares. El proyecto se divide en dos carpetas:
 
 - **Servidor/**: aplicación Flask que gestiona usuarios, sincroniza el dataset, entrena las codificaciones faciales y expone la interfaz web.
