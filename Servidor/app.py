@@ -47,7 +47,7 @@ app = Flask(__name__)
 # --- Lock para Encodings ---
 encoding_lock = threading.Lock() 
 
-app.config['SECRET_KEY'] = 'una-clave-secreta-muy-segura-cambiar-en-prod'
+app.config['SECRET_KEY'] = os.environ.get('SECRET_KEY', 'clave-de-desarrollo-no-usar-en-produccion')  # en producción, definir SECRET_KEY como variable de entorno
 app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:///' + os.path.join(BASE_DIR, 'database.db')
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
 

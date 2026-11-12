@@ -1,0 +1,16 @@
+# Entorno Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+.env
+
+# Datos generados en el servidor: fotos, codificaciones y base de datos reales
+Servidor/dataset/
+Servidor/encodings.pickle
+Servidor/database.db
+Servidor/instance/
+
+# Sistema
+.DS_Store
+Thumbs.db

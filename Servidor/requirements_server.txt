@@ -9,4 +9,4 @@ dlib
 numpy
 pytz
 scipy
-imutils
+Pillow
