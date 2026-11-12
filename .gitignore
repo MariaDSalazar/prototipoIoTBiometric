@@ -5,3 +5,5 @@
 __pycache__/
 *.pyc
 /Servidor/dataset/
+/Servidor/encodings.pickle
+*.pickle
