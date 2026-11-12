@@ -1,4 +1,6 @@
-# Prototipo IoT Biométrico
+# Umbral
+
+Prototipo IoT de control de acceso biométrico.
 
 > **Requiere hardware.** Para ejecutarlo completo se necesitan una Raspberry Pi con cámara, un lector de huellas y un broker MQTT; sin ellos solo arranca la interfaz web del servidor.
 
